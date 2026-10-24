@@ -1,0 +1,16 @@
+# 让 Grafana 启动时自动连上 TradeWatch 的 PostgreSQL，不用手动配置
+apiVersion: 1
+datasources:
+  - name: TradeWatch
+    uid: tradewatch-pg
+    type: grafana-postgresql-datasource
+    url: postgres:5432          # docker compose 里，容器之间用服务名互相访问
+    user: tradewatch
+    isDefault: true
+    jsonData:
+      database: tradewatch
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+    secureJsonData:
+      password: $POSTGRES_PASSWORD

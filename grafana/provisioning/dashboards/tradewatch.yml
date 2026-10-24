@@ -1,0 +1,8 @@
+# 让 Grafana 自动加载 grafana/dashboards 文件夹里的面板
+apiVersion: 1
+providers:
+  - name: TradeWatch
+    folder: TradeWatch
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

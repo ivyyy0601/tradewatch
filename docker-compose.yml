@@ -1,0 +1,43 @@
+# TradeWatch 的"菜单"：要启动哪些容器、怎么连起来
+# 启动：docker compose up -d      停止：docker compose down
+# 密码等配置放在 .env 文件里（不上传 GitHub），参考 .env.example
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: tw-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tradewatch
+      POSTGRES_USER: tradewatch
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: America/New_York
+    volumes:
+      - pgdata:/var/lib/postgresql/data           # 数据存在这里，容器删了数据也还在
+      - ./sql:/docker-entrypoint-initdb.d:ro      # 第一次启动时自动建表
+    ports:
+      - "127.0.0.1:5432:5432"                     # 只允许服务器本机连接，不对公网开放
+    logging:
+      options: { max-size: "20m", max-file: "3" } # 日志最多 60MB，防止写满硬盘
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: tw-grafana
+    restart: unless-stopped
+    depends_on: [postgres]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: America/New_York
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro   # 自动连上数据库
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro   # 面板定义
+    ports:
+      - "127.0.0.1:3000:3000"                     # 同样只开放给本机，用 SSH 隧道访问
+    logging:
+      options: { max-size: "20m", max-file: "3" }
+
+volumes:
+  pgdata:
+  grafana-data:
