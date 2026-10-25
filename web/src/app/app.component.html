@@ -21,7 +21,7 @@
   <ng-container *ngIf="trace">
     <p>
       <b>{{ trace.parent['parent_id'] }}</b> · {{ trace.parent['pm_id'] }} · {{ trace.parent['side'] }}
-      {{ trace.parent['qty'] }} {{ trace.parent['symbol'] }} @ {{ trace.parent['ref_price'] }} ·
+      {{ trace.parent['qty'] }} {{ trace.parent['symbol'] }} &#64; {{ trace.parent['ref_price'] }} ·
       已成交 {{ trace.parent['filled_qty'] }}（均价 {{ trace.parent['avg_price'] ?? '-' }}）·
       <span class="tag">{{ trace.parent['status'] }}</span>
       <span class="bad-text" *ngIf="trace.parent['reject_reason']"> {{ trace.parent['reject_reason'] }}</span>
