@@ -12,10 +12,10 @@
 交易系统拆成几个服务（每个是一个 Docker 容器），服务之间**只通过 Kafka 传消息**：
 
 ```
- tw-market-data ──md.bars──▶ tw-oms（3 个 PM 的策略 + OMS + 交易前风控）
+ tw-market-data ──md.bars──▶ tw-oms（3 个 PM 的策略 + OMS + 交易前风控，C# / .NET）
                                   │ orders.parent（通过风控的母单）
                                   ▼
-                             tw-ems（TWAP：母单拆成 8 个子单，2 分钟没成交完就撤了重下）
+                             tw-ems（TWAP：母单拆成 8 个子单，2 分钟没成交完就撤了重下，C# / .NET）
                                   │ exec.orders            ▲ exec.reports
                                   ▼                        │
                              tw-fix-gateway（把子单翻译成 FIX，和券商保持连接）
@@ -28,8 +28,13 @@
         └──▶ tw-order-store 把它们写进 PostgreSQL（数据库是唯一的真相来源）
 
  tw-monitor：每 30 秒查数据库和 Kafka → 告警（alerts 表 + Telegram）；对账单到了就出复盘报告
+ tw-console：值班控制台网页（ASP.NET 后端 + Angular 前端）
  tw-chaos：现实世界，随机制造意外（不归你管）
 ```
+
+**用什么语言写的：** 交易核心（oms、ems）和值班网页用 **C# / .NET 8**（网页前端是 **Angular**），
+其他服务和工具用 **Python**，和很多基金的分工一样：交易系统用 C#，支持工具和分析用 Python。
+C# 代码在 `dotnet/`，网页前端在 `web/`。
 
 | PM | 策略 | 交易 |
 |---|---|---|
@@ -64,6 +69,11 @@
 | `./tw report` | 马上生成复盘报告（平时 monitor 会自动生成） |
 
 真实工作里，暂停 / 恢复 PM、撤单之前要先和 PM / manager 沟通，事后记录谁、什么时候、为什么。
+
+### 值班控制台网页（tw-console）
+VS Code → **PORTS** → Forward 端口 `8080` → 浏览器打开 http://localhost:8080
+一个页面看完所有状态，每 5 秒刷新；可以直接点按钮**暂停 / 恢复 PM、撤母单、关告警**（都要写原因），
+点任何一个母单号就能看到它的完整经历。页面右上角填你的名字，操作记录里会写是谁做的。
 
 ### 值班屏幕（Grafana）
 VS Code 连上服务器 → 下方 **PORTS** → Forward 端口 `3000` → 浏览器打开 http://localhost:3000
@@ -111,6 +121,13 @@ docker compose exec postgres psql -U tradewatch
 | `kafka_lag` | 每 30 秒记录的 Kafka 积压 |
 | `recon_breaks` | 对账发现的差异 |
 | 视图 `positions` / `pm_exposure` / `latest_prices` | 持仓、敞口和盈亏、最新价 |
+
+### C# 版 OMS / EMS 出问题时：切回 Python 版
+两个版本做的事情完全一样，消息格式也一样，可以随时切换：
+```bash
+docker compose stop oms ems && docker compose --profile python-core up -d oms-py ems-py    # 切到 Python 版
+docker compose stop oms-py ems-py && docker compose up -d oms ems                           # 切回 C# 版
+```
 
 ### 文件
 ```bash

@@ -3,8 +3,8 @@
 # 密码等配置放在 .env（不上传 GitHub），参考 .env.example
 #
 # 交易链路（每一段是一个容器，中间用 Kafka 传消息）：
-#   market-data → oms（策略 + 风控）→ ems（TWAP）→ fix-gateway → broker-sim（券商）
-#   order-store 把所有消息写进 PostgreSQL；monitor 盯着数据库和 Kafka 发告警
+#   market-data → oms（策略 + 风控，C#）→ ems（TWAP，C#）→ fix-gateway → broker-sim（券商）
+#   order-store 把所有消息写进 PostgreSQL；monitor 盯着数据库和 Kafka 发告警；console 是值班网页
 
 x-logging: &logging
   options: { max-size: "20m", max-file: "5" }    # 每个容器的日志最多 100MB，防止写满硬盘
@@ -130,15 +130,19 @@ services:
     container_name: tw-market-data
     command: python -m services.market_data
 
-  oms:
+  oms:                                            # C# 写的：策略 + 风控 + 订单管理
     <<: *app
+    build: { context: ., dockerfile: Dockerfile.dotnet, target: trading }
+    image: tradewatch-trading
+    pull_policy: build
     container_name: tw-oms
-    command: python -m services.oms
+    command: ["oms"]
 
-  ems:
+  ems:                                            # C# 写的：TWAP 执行算法（和 oms 用同一个镜像）
     <<: *app
+    image: tradewatch-trading
     container_name: tw-ems
-    command: python -m services.ems
+    command: ["ems"]
 
   fix-gateway:
     <<: *app
@@ -172,6 +176,30 @@ services:
     <<: *app
     container_name: tw-monitor
     command: python -m services.monitor
+
+  console:                                        # 值班控制台网页：ASP.NET（C#）后端 + Angular 前端
+    <<: *app
+    build: { context: ., dockerfile: Dockerfile.dotnet, target: console }
+    image: tradewatch-console
+    pull_policy: build
+    container_name: tw-console
+    ports:
+      - "127.0.0.1:8080:8080"                     # VS Code 里 forward 8080 端口，浏览器打开 http://localhost:8080
+
+  # ---------- 备用：Python 版的 OMS / EMS（C# 版出问题时切换用，平时不启动）----------
+  #   切换：docker compose stop oms ems && docker compose --profile python-core up -d oms-py ems-py
+  #   切回：docker compose stop oms-py ems-py && docker compose up -d oms ems
+  oms-py:
+    <<: *app
+    container_name: tw-oms-py
+    profiles: ["python-core"]
+    command: python -m services.oms
+
+  ems-py:
+    <<: *app
+    container_name: tw-ems-py
+    profiles: ["python-core"]
+    command: python -m services.ems
 
   tools:                                          # 命令行工具：./tw status（用的时候临时启动，用完就删）
     <<: *app

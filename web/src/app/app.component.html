@@ -1,0 +1,193 @@
+<header>
+  <h1>TradeWatch 值班控制台</h1>
+  <div class="header-right">
+    <input class="trace-input" [(ngModel)]="traceId" placeholder="母单号 / 子单号" (keyup.enter)="openTrace(traceId)">
+    <button (click)="openTrace(traceId)">追踪</button>
+    <label class="operator">操作人 <input [(ngModel)]="operator" (change)="saveOperator()" size="8"></label>
+    <span class="muted" *ngIf="lastRefresh">刷新于 {{ lastRefresh | date:'HH:mm:ss' }}</span>
+  </div>
+</header>
+
+<div class="banner ok" *ngIf="message" (click)="message = ''">{{ message }}（点击关闭）</div>
+<div class="banner bad" *ngIf="error">{{ error }}</div>
+
+<!-- ========== 一张单的完整经历 ========== -->
+<section class="card trace" *ngIf="trace || traceError">
+  <div class="card-title">
+    <h2>追踪 {{ traceId }}</h2>
+    <button (click)="closeTrace()">关闭</button>
+  </div>
+  <p class="bad-text" *ngIf="traceError">{{ traceError }}</p>
+  <ng-container *ngIf="trace">
+    <p>
+      <b>{{ trace.parent['parent_id'] }}</b> · {{ trace.parent['pm_id'] }} · {{ trace.parent['side'] }}
+      {{ trace.parent['qty'] }} {{ trace.parent['symbol'] }} @ {{ trace.parent['ref_price'] }} ·
+      已成交 {{ trace.parent['filled_qty'] }}（均价 {{ trace.parent['avg_price'] ?? '-' }}）·
+      <span class="tag">{{ trace.parent['status'] }}</span>
+      <span class="bad-text" *ngIf="trace.parent['reject_reason']"> {{ trace.parent['reject_reason'] }}</span>
+    </p>
+    <h3>子单</h3>
+    <table>
+      <tr><th>子单</th><th>券商</th><th>数量</th><th>限价</th><th>已成交</th><th>均价</th><th>状态</th><th>原因</th><th>发出</th></tr>
+      <tr *ngFor="let c of trace.children">
+        <td class="mono">{{ c['child_id'] }}</td><td>{{ c['broker'] }}</td><td>{{ c['qty'] }}</td><td>{{ c['limit_price'] }}</td>
+        <td>{{ c['filled_qty'] }}</td><td>{{ c['avg_price'] }}</td><td>{{ c['status'] }}</td><td>{{ c['reason'] }}</td>
+        <td>{{ c['created_at'] | date:'HH:mm:ss' }}</td>
+      </tr>
+    </table>
+    <h3>经历（order_events）</h3>
+    <table>
+      <tr><th>时间</th><th>服务</th><th>事件</th><th>子单</th><th>说明</th></tr>
+      <tr *ngFor="let e of trace.events" [class.warn-row]="isWarnEvent(e['event_type'])">
+        <td>{{ e['ts'] | date:'HH:mm:ss.SSS' }}</td><td>{{ e['service'] }}</td><td>{{ e['event_type'] }}</td>
+        <td class="mono">{{ e['child_id'] }}</td><td>{{ e['detail'] }}</td>
+      </tr>
+    </table>
+    <h3>FIX 消息</h3>
+    <table>
+      <tr><th>时间</th><th>方向</th><th>券商</th><th>35</th><th>原文</th></tr>
+      <tr *ngFor="let f of trace.fix">
+        <td>{{ f['ts'] | date:'HH:mm:ss.SSS' }}</td><td>{{ f['direction'] }}</td><td>{{ f['broker'] }}</td>
+        <td>{{ f['msg_type'] }}</td><td class="mono small">{{ f['raw'] }}</td>
+      </tr>
+    </table>
+  </ng-container>
+</section>
+
+<!-- ========== 系统状态 ========== -->
+<div class="grid4" *ngIf="status">
+  <section class="card">
+    <h2>服务心跳</h2>
+    <table>
+      <tr *ngFor="let h of status.heartbeats">
+        <td>{{ h['service'] }}</td>
+        <td [class.good]="hbOk(h)" [class.bad]="!hbOk(h)">{{ hbOk(h) ? 'OK' : 'STALE' }}</td>
+        <td class="muted">{{ h['age_s'] }} 秒前</td>
+      </tr>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>FIX 连接</h2>
+    <table>
+      <tr *ngFor="let s of status.sessions">
+        <td>{{ s['broker'] }}</td>
+        <td [class.good]="s['status'] === 'UP'" [class.bad]="s['status'] !== 'UP'">{{ s['status'] }}</td>
+        <td class="muted">心跳 {{ s['heartbeat_age_s'] }}s · 回报 {{ s['last_msg_age_s'] }}s</td>
+      </tr>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>行情</h2>
+    <table>
+      <tr *ngFor="let p of status.prices">
+        <td>{{ p['symbol'] }}</td>
+        <td>{{ p['price'] }}</td>
+        <td [class.bad]="p['age_s'] > 180" class="muted">{{ p['age_s'] }} 秒前</td>
+      </tr>
+    </table>
+    <h3>可借券</h3>
+    <span class="chip" *ngFor="let l of status.locates" [class.bad]="l['available'] === 0">{{ l['symbol'] }} {{ l['available'] }}</span>
+  </section>
+
+  <section class="card">
+    <h2>Kafka 积压</h2>
+    <table>
+      <tr *ngFor="let l of status.lag">
+        <td>{{ l['group_id'] }}</td>
+        <td [class.bad]="l['lag'] > 100">{{ l['lag'] }}</td>
+      </tr>
+    </table>
+  </section>
+</div>
+
+<!-- ========== PM ========== -->
+<section class="card" *ngIf="status">
+  <h2>PM</h2>
+  <table>
+    <tr><th>PM</th><th>策略</th><th>状态</th><th>执行中母单</th><th>总敞口 / 上限</th><th>净敞口 / 上限</th><th>盈亏</th><th>操作</th></tr>
+    <tr *ngFor="let p of status.pms">
+      <td><b>{{ p['pm_id'] }}</b></td>
+      <td>{{ p['name'] }}</td>
+      <td>
+        <span [class.bad]="p['paused']" [class.good]="!p['paused']">{{ p['paused'] ? 'PAUSED' : 'ACTIVE' }}</span>
+        <div class="muted small" *ngIf="p['paused']">{{ p['changed_by'] }}：{{ p['reason'] }}</div>
+      </td>
+      <td>{{ p['working'] }}</td>
+      <td>{{ p['gross'] | number:'1.0-0' }} / {{ p['max_gross'] | number:'1.0-0' }}</td>
+      <td>{{ p['net'] | number:'1.0-0' }} / {{ p['max_net'] | number:'1.0-0' }}</td>
+      <td [class.bad]="p['pnl'] < 0" [class.good]="p['pnl'] > 0">{{ p['pnl'] | number:'1.0-0' }}</td>
+      <td>
+        <button class="danger" *ngIf="!p['paused']" (click)="pause(p['pm_id'])">暂停</button>
+        <button *ngIf="p['paused']" (click)="resume(p['pm_id'])">恢复</button>
+      </td>
+    </tr>
+  </table>
+</section>
+
+<!-- ========== 告警 ========== -->
+<section class="card">
+  <div class="card-title">
+    <h2>{{ showAllAlerts ? '最近的告警' : '未解决的告警' }}（{{ alerts.length }}）</h2>
+    <button (click)="toggleAllAlerts()">{{ showAllAlerts ? '只看未解决' : '看全部' }}</button>
+  </div>
+  <p class="muted" *ngIf="alerts.length === 0">没有告警</p>
+  <table *ngIf="alerts.length > 0">
+    <tr><th>#</th><th>级别</th><th>规则</th><th>时间</th><th>内容</th><th>处理</th></tr>
+    <tr *ngFor="let a of alerts">
+      <td>{{ a['alert_id'] }}</td>
+      <td><span class="sev" [ngClass]="severityClass(a['severity'])">{{ a['severity'] }}</span></td>
+      <td>{{ a['rule'] }}</td>
+      <td>{{ a['fired_at'] | date:'MM-dd HH:mm:ss' }}</td>
+      <td>{{ a['detail'] }}</td>
+      <td>
+        <button *ngIf="!a['resolved_at']" (click)="resolve(a)">关掉</button>
+        <span class="muted small" *ngIf="a['resolved_at']">{{ a['resolved_at'] | date:'HH:mm' }} {{ a['note'] }}</span>
+      </td>
+    </tr>
+  </table>
+</section>
+
+<!-- ========== 订单 ========== -->
+<div class="grid2">
+  <section class="card">
+    <h2>执行中的母单（{{ working.length }}）</h2>
+    <table>
+      <tr><th>母单</th><th>PM</th><th>股票</th><th>方向</th><th>进度</th><th>子单</th><th>最后子单</th><th></th></tr>
+      <tr *ngFor="let p of working">
+        <td><a class="mono" (click)="openTrace(p['parent_id'])">{{ p['parent_id'] }}</a></td>
+        <td>{{ p['pm_id'] }}</td><td>{{ p['symbol'] }}</td><td>{{ p['side'] }}</td>
+        <td>{{ p['filled_qty'] }} / {{ p['qty'] }}</td>
+        <td>{{ p['children'] }}</td>
+        <td>{{ p['last_child_at'] | date:'HH:mm:ss' }}</td>
+        <td><button class="danger small-btn" (click)="cancel(p['parent_id'])">撤单</button></td>
+      </tr>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>最近被风控拒绝的母单</h2>
+    <table>
+      <tr><th>时间</th><th>母单</th><th>PM</th><th>股票</th><th>方向</th><th>数量</th><th>原因</th></tr>
+      <tr *ngFor="let p of rejected">
+        <td>{{ p['updated_at'] | date:'HH:mm:ss' }}</td>
+        <td><a class="mono" (click)="openTrace(p['parent_id'])">{{ p['parent_id'] }}</a></td>
+        <td>{{ p['pm_id'] }}</td><td>{{ p['symbol'] }}</td><td>{{ p['side'] }}</td><td>{{ p['qty'] }}</td>
+        <td class="small">{{ p['reject_reason'] }}</td>
+      </tr>
+    </table>
+  </section>
+</div>
+
+<section class="card">
+  <h2>最新的订单事件</h2>
+  <table>
+    <tr><th>时间</th><th>服务</th><th>事件</th><th>母单</th><th>子单</th><th>说明</th></tr>
+    <tr *ngFor="let e of events" [class.warn-row]="isWarnEvent(e['event_type'])">
+      <td>{{ e['ts'] | date:'HH:mm:ss.SSS' }}</td><td>{{ e['service'] }}</td><td>{{ e['event_type'] }}</td>
+      <td><a class="mono" (click)="openTrace(e['parent_id'])">{{ e['parent_id'] }}</a></td>
+      <td class="mono">{{ e['child_id'] }}</td><td>{{ e['detail'] }}</td>
+    </tr>
+  </table>
+</section>

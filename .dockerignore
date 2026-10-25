@@ -4,3 +4,8 @@ backups/
 .env
 __pycache__/
 *.db
+web/node_modules/
+web/dist/
+web/.angular/
+dotnet/**/bin/
+dotnet/**/obj/

@@ -1,0 +1,33 @@
+# C# 写的服务用的镜像：交易核心（oms / ems）和值班控制台（console）
+# 用法见 docker-compose.yml 里的 target: trading / console
+
+# ---------- ① 打包 Angular 网页 ----------
+FROM node:20-slim AS web
+WORKDIR /web
+ENV NG_CLI_ANALYTICS=false
+COPY web/package.json ./
+RUN npm install --no-audit --no-fund
+COPY web/ ./
+RUN npx ng build
+
+# ---------- ② 编译 C# ----------
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+COPY dotnet/ ./
+RUN dotnet publish Trading/TradeWatch.Trading.csproj -c Release -o /out/trading
+RUN dotnet publish Console/TradeWatch.Console.csproj -c Release -o /out/console
+
+# ---------- ③ 交易核心：dotnet TradeWatch.Trading.dll oms|ems ----------
+FROM mcr.microsoft.com/dotnet/runtime:8.0 AS trading
+WORKDIR /app
+ENV TZ=America/New_York
+COPY --from=build /out/trading ./
+ENTRYPOINT ["dotnet", "TradeWatch.Trading.dll"]
+
+# ---------- ④ 值班控制台：ASP.NET 后端 + Angular 网页 ----------
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS console
+WORKDIR /app
+ENV TZ=America/New_York ASPNETCORE_HTTP_PORTS=8080
+COPY --from=build /out/console ./
+COPY --from=web /web/dist/console/browser ./wwwroot
+ENTRYPOINT ["dotnet", "TradeWatch.Console.dll"]
