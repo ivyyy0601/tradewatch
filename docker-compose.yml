@@ -38,6 +38,35 @@ services:
     logging:
       options: { max-size: "20m", max-file: "3" }
 
+  # ---------- 我们自己的程序 ----------
+  engine:                                         # 交易系统：行情回放 + 策略 + 风控 + 模拟券商
+    build: .
+    container_name: tw-engine
+    restart: unless-stopped
+    depends_on: [postgres]
+    command: python engine.py
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SPEED: ${SPEED:-60}                         # 真实 1 秒 = 行情 1 分钟
+    volumes:
+      - ./data:/app/data                          # 行情 CSV 放在服务器的 data/ 文件夹
+    logging:
+      options: { max-size: "20m", max-file: "3" }
+
+  monitor:                                        # 参考答案：默认不启动，你自己写完监控再对照
+    profiles: ["answer"]                          # 要启动它：docker compose --profile answer up -d monitor
+    build: .
+    container_name: tw-monitor
+    restart: unless-stopped
+    depends_on: [postgres]
+    command: python monitor.py
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+    logging:
+      options: { max-size: "20m", max-file: "3" }
+
 volumes:
   pgdata:
   grafana-data:
