@@ -203,6 +203,16 @@ public sealed class Oms
             paused[(string)r["pm_id"]!] = (string?)r["reason"] ?? "";
         foreach (var r in Db.Query(db, "SELECT symbol, available FROM locates"))
             locates[(string)r["symbol"]!] = Convert.ToInt32(r["available"]);
+        // 最近的价格历史：策略要 30～60 根 K 线才能算信号，从数据库读回来，重启后马上就能继续下单
+        foreach (var r in Db.Query(db, @"SELECT symbol, price FROM (
+                     SELECT symbol, price, ts, row_number() OVER (PARTITION BY symbol ORDER BY ts DESC) AS rn
+                     FROM market_data WHERE ts > now() - interval '1 day') t
+                 WHERE rn <= 300 ORDER BY symbol, ts"))
+        {
+            var s = (string)r["symbol"]!;
+            if (!hist.TryGetValue(s, out var h)) hist[s] = h = new List<double>();
+            h.Add(Convert.ToDouble(r["price"]));
+        }
         // 还在执行的母单（10 分钟内还有动静的），EMS 会接着执行；更早的 EMS 会取消
         foreach (var r in Db.Query(db, "SELECT parent_id, pm_id, symbol, side, qty, filled_qty FROM parent_orders " +
                                        "WHERE status = 'WORKING' AND updated_at > now() - interval '10 minutes'"))
@@ -212,6 +222,7 @@ public sealed class Oms
         Log.Info(Service, "start", new()
         {
             ["pms"] = Config.Pms.Keys.ToList(), ["positions"] = positions.Count, ["working_parents"] = parents.Count,
+            ["history_bars"] = hist.ToDictionary(kv => kv.Key, kv => kv.Value.Count),
             ["paused"] = paused.Keys.ToList(), ["runtime"] = ".NET " + Environment.Version,
         });
     }

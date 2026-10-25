@@ -1,0 +1,52 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "dotnet", "dotnet", "{71E6E750-85FD-B5BC-4321-E01377EC6231}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Shared", "Shared", "{B06F09BE-2A69-E5B8-79C0-17050BE0FC01}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TradeWatch.Shared", "dotnet\Shared\TradeWatch.Shared.csproj", "{A3437003-5BB6-356A-CA56-30D613DBEC38}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Trading", "Trading", "{9FAF4D1C-89B0-25FB-848C-3E7F36B09947}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TradeWatch.Trading", "dotnet\Trading\TradeWatch.Trading.csproj", "{65258315-143C-D550-AAF5-4C7B1ED51688}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Console", "Console", "{2C72EF6A-860F-493B-C8F8-E23AD45813AD}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TradeWatch.Console", "dotnet\Console\TradeWatch.Console.csproj", "{85FCFD31-6916-159E-D041-2D9DFEB99983}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A3437003-5BB6-356A-CA56-30D613DBEC38}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A3437003-5BB6-356A-CA56-30D613DBEC38}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A3437003-5BB6-356A-CA56-30D613DBEC38}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A3437003-5BB6-356A-CA56-30D613DBEC38}.Release|Any CPU.Build.0 = Release|Any CPU
+		{65258315-143C-D550-AAF5-4C7B1ED51688}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{65258315-143C-D550-AAF5-4C7B1ED51688}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{65258315-143C-D550-AAF5-4C7B1ED51688}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{65258315-143C-D550-AAF5-4C7B1ED51688}.Release|Any CPU.Build.0 = Release|Any CPU
+		{85FCFD31-6916-159E-D041-2D9DFEB99983}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{85FCFD31-6916-159E-D041-2D9DFEB99983}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{85FCFD31-6916-159E-D041-2D9DFEB99983}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{85FCFD31-6916-159E-D041-2D9DFEB99983}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{B06F09BE-2A69-E5B8-79C0-17050BE0FC01} = {71E6E750-85FD-B5BC-4321-E01377EC6231}
+		{A3437003-5BB6-356A-CA56-30D613DBEC38} = {B06F09BE-2A69-E5B8-79C0-17050BE0FC01}
+		{9FAF4D1C-89B0-25FB-848C-3E7F36B09947} = {71E6E750-85FD-B5BC-4321-E01377EC6231}
+		{65258315-143C-D550-AAF5-4C7B1ED51688} = {9FAF4D1C-89B0-25FB-848C-3E7F36B09947}
+		{2C72EF6A-860F-493B-C8F8-E23AD45813AD} = {71E6E750-85FD-B5BC-4321-E01377EC6231}
+		{85FCFD31-6916-159E-D041-2D9DFEB99983} = {2C72EF6A-860F-493B-C8F8-E23AD45813AD}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {164ED9D8-2881-4023-8E1A-C3AB614C852C}
+	EndGlobalSection
+EndGlobal
