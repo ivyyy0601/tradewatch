@@ -10,8 +10,8 @@ x-logging: &logging
   options: { max-size: "20m", max-file: "5" }    # 每个容器的日志最多 100MB，防止写满硬盘
 
 x-app: &app                                       # 我们自己写的服务都用同一个镜像，只是启动命令不同
-  build: .
-  image: tradewatch-app
+  image: tradewatch-app                           # 镜像只由 order-store 打包一次，其他服务直接用
+  pull_policy: never                              # 这是我们自己打包的镜像，不要去网上下载
   restart: unless-stopped
   environment:
     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -147,6 +147,8 @@ services:
 
   order-store:
     <<: *app
+    build: .                                      # 只在这里打包镜像（多个服务同时打包同一个镜像会冲突）
+    pull_policy: build
     container_name: tw-order-store
     command: python -m services.order_store
 
