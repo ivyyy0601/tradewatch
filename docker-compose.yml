@@ -1,9 +1,13 @@
-# TradeWatch 的"菜单"：要启动哪些容器、怎么连起来
+# TradeWatch：一个缩小版的多 PM 对冲基金交易环境
 # 启动：docker compose up -d      停止：docker compose down
-# 密码等配置放在 .env 文件里（不上传 GitHub），参考 .env.example
+# 密码等配置放在 .env（不上传 GitHub），参考 .env.example
+
+x-logging: &logging
+  options: { max-size: "20m", max-file: "5" }    # 每个容器的日志最多 100MB，防止写满硬盘
 
 services:
-  postgres:
+  # ---------- 公司的基础设施 ----------
+  postgres:                                       # 交易数据库
     image: postgres:16
     container_name: tw-postgres
     restart: unless-stopped
@@ -13,33 +17,53 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       TZ: America/New_York
     volumes:
-      - pgdata:/var/lib/postgresql/data           # 数据存在这里，容器删了数据也还在
-      - ./sql:/docker-entrypoint-initdb.d:ro      # 第一次启动时自动建表
+      - pgdata:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro      # 数据卷是空的时候自动建表
     ports:
-      - "127.0.0.1:5432:5432"                     # 只允许服务器本机连接，不对公网开放
-    logging:
-      options: { max-size: "20m", max-file: "3" } # 日志最多 60MB，防止写满硬盘
+      - "127.0.0.1:5432:5432"
+    logging: *logging
 
-  grafana:
+  loki:                                           # 日志平台：集中存放所有容器的日志
+    image: grafana/loki:3.0.0
+    container_name: tw-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    logging: *logging
+
+  promtail:                                       # 日志收集器：读每个容器的日志，送进 Loki
+    image: grafana/promtail:3.0.0
+    container_name: tw-promtail
+    restart: unless-stopped
+    depends_on: [loki]
+    command: -config.file=/etc/promtail/promtail.yml
+    volumes:
+      - ./loki/promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    logging: *logging
+
+  grafana:                                        # 值班屏幕
     image: grafana/grafana:11.2.0
     container_name: tw-grafana
     restart: unless-stopped
-    depends_on: [postgres]
+    depends_on: [postgres, loki]
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/desk.json
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       TZ: America/New_York
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro   # 自动连上数据库
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro   # 面板定义
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
-      - "127.0.0.1:3000:3000"                     # 同样只开放给本机，用 SSH 隧道访问
-    logging:
-      options: { max-size: "20m", max-file: "3" }
+      - "127.0.0.1:3000:3000"
+    logging: *logging
 
-  # ---------- 我们自己的程序 ----------
-  engine:                                         # 交易系统：行情回放 + 策略 + 风控 + 模拟券商
+  # ---------- 交易系统（开发团队写的，你值班时不改它） ----------
+  engine:
     build: .
     container_name: tw-engine
     restart: unless-stopped
@@ -47,26 +71,16 @@ services:
     command: python engine.py
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      SPEED: ${SPEED:-60}                         # 真实 1 秒 = 行情 1 分钟
+      SPEED: ${SPEED:-1}                          # 1 = 真实速度（1 分钟一根 K 线）
+      FAULT_GAP_MIN: ${FAULT_GAP_MIN:-20}         # 两次意外之间最少隔多少分钟
+      FAULT_GAP_MAX: ${FAULT_GAP_MAX:-60}         # 最多隔多少分钟
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}  # 交易系统不用，留给你用同一个镜像跑自己的监控脚本
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
     volumes:
-      - ./data:/app/data                          # 行情 CSV 放在服务器的 data/ 文件夹
-    logging:
-      options: { max-size: "20m", max-file: "3" }
-
-  monitor:                                        # 参考答案：默认不启动，你自己写完监控再对照
-    profiles: ["answer"]                          # 要启动它：docker compose --profile answer up -d monitor
-    build: .
-    container_name: tw-monitor
-    restart: unless-stopped
-    depends_on: [postgres]
-    command: python monitor.py
-    environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
-    logging:
-      options: { max-size: "20m", max-file: "3" }
+      - ./data:/app/data                          # 行情 CSV、券商对账单都在服务器的 data/ 里
+    logging: *logging
 
 volumes:
   pgdata:
+  loki-data:
   grafana-data:

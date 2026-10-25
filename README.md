@@ -1,9 +1,16 @@
 # TradeWatch
 
-A simulated multi-strategy trading system with a trade-support monitoring layer:
-order lifecycle tracking, pre-trade risk checks, alerting and fault-injection drills.
+A simulated multi-manager hedge fund trading environment for practising **trade support**:
+three PMs with their own strategies and risk limits, an OMS, pre-trade risk checks, a TWAP execution algo
+slicing parent orders into child orders, two brokers over FIX 4.4, end-of-day broker statements,
+and hidden, randomly scheduled real-world incidents (broker disconnects, lost execution reports,
+bad deploys, stale market data, locate shortages, ...).
 
-## Progress
-- [x] Step 1: order lifecycle (states, events, trace)
-- [x] Step 2: message passing between strategy, risk gateway and broker
-- [ ] Step 3: store orders and events in PostgreSQL
+The on-call desk is built from Grafana dashboards, Loki for logs and PostgreSQL for orders, fills and
+FIX messages. My own monitoring, reconciliation and incident write-ups live in `my_tools/` and `docs/`.
+
+- `ONCALL.md` – on-call handbook (中文)
+- `engine.py` – trading system (OMS, risk, EMS/TWAP, FIX gateway, broker simulator)
+- `sql/01_schema.sql` – database schema
+- `grafana/`, `loki/` – on-call screens and log platform
+- `step1_...` to `step6_...` – learning steps that led here

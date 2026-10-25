@@ -1,0 +1,578 @@
+{
+  "uid": "tradewatch-desk",
+  "title": "TradeWatch 值班屏幕",
+  "tags": [
+    "tradewatch"
+  ],
+  "timezone": "browser",
+  "editable": true,
+  "refresh": "10s",
+  "time": {
+    "from": "now-3h",
+    "to": "now"
+  },
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "行情：距离上次更新（秒）",
+      "description": "每只股票的行情多久没更新了。正常情况下每根 K 线都会更新。",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "tradewatch-pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 10,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "tradewatch-pg"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT EXTRACT(EPOCH FROM now() - MAX(ts) FILTER (WHERE symbol = 'SNDK')) AS \"SNDK\",\n       EXTRACT(EPOCH FROM now() - MAX(ts) FILTER (WHERE symbol = 'MU'))   AS \"MU\",\n       EXTRACT(EPOCH FROM now() - MAX(ts) FILTER (WHERE symbol = 'MSFT')) AS \"MSFT\",\n       EXTRACT(EPOCH FROM now() - MAX(ts) FILTER (WHERE symbol = 'GOOGL')) AS \"GOOGL\"\nFROM market_data WHERE ts > now() - interval '1 day'"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 150
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "FIX 连接",
+      "description": "和每家券商的 FIX 连接。心跳 = 连接本身是否活着；最后回报 = 券商最后一次回复我们的订单。",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "tradewatch-pg"
+      },
+      "gridPos": {
+        "x": 10,
+        "y": 0,
+        "w": 14,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "tradewatch-pg"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT broker AS \"券商\", broker_name AS \"名称\", status AS \"状态\",\n       ROUND(EXTRACT(EPOCH FROM now() - last_heartbeat)) AS \"心跳(秒前)\",\n       ROUND(EXTRACT(EPOCH FROM now() - last_msg_in))    AS \"最后回报(秒前)\"\nFROM fix_sessions ORDER BY broker"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "状态"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "UP": {
+                        "color": "green",
+                        "index": 0
+                      },
+                      "DOWN": {
+                        "color": "red",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "PM 总览",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "tradewatch-pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 24,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "tradewatch-pg"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT p.pm_id AS \"PM\", p.name AS \"策略\",\n       CASE WHEN c.paused THEN 'PAUSED' ELSE 'ACTIVE' END AS \"状态\",\n       (SELECT COUNT(*) FROM parent_orders o WHERE o.pm_id = p.pm_id AND o.created_at > now() - interval '1 hour') AS \"母单(1h)\",\n       (SELECT COUNT(*) FROM parent_orders o WHERE o.pm_id = p.pm_id AND o.status = 'WORKING') AS \"执行中\",\n       (SELECT COUNT(*) FROM parent_orders o WHERE o.pm_id = p.pm_id AND o.status = 'REJECTED'\n                                              AND o.created_at > now() - interval '1 hour') AS \"被拒(1h)\",\n       ROUND(e.gross) AS \"总敞口 $\", ROUND(e.net) AS \"净敞口 $\", ROUND(e.pnl) AS \"盈亏 $\",\n       p.max_gross AS \"总敞口上限\", p.max_net AS \"净敞口上限\"\nFROM pms p LEFT JOIN control c USING (pm_id) LEFT JOIN pm_exposure e USING (pm_id)\nORDER BY p.pm_id"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "状态"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "ACTIVE": {
+                        "color": "green",
+                        "index": 0
+                      },
+                      "PAUSED": {
+                        "color": "red",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "母单数（每 5 分钟，按 PM）",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "tradewatch-pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 11,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "tradewatch-pg"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '5m'), pm_id AS metric, COUNT(*) AS value\nFROM parent_orders WHERE $__timeFilter(created_at) GROUP BY 1, 2 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "成交笔数（每分钟，按券商）",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "tradewatch-pg"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 11,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "tradewatch-pg"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroupAlias(ts, '1m'), broker AS metric, COUNT(*) AS value\nFROM executions WHERE $__timeFilter(ts) GROUP BY 1, 2 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "拒单（每 5 分钟，按原因）",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "tradewatch-pg"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 11,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "tradewatch-pg"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroupAlias(ts, '5m'), metric, COUNT(*) AS value FROM (\n  SELECT updated_at AS ts, 'risk: ' || split_part(reject_reason, ' ', 1) AS metric\n  FROM parent_orders WHERE status = 'REJECTED' AND $__timeFilter(updated_at)\n  UNION ALL\n  SELECT updated_at, 'broker: ' || COALESCE(reason, '?')\n  FROM child_orders WHERE status = 'REJECTED' AND $__timeFilter(updated_at)\n) t GROUP BY 1, 2 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "执行中的母单",
+      "description": "正在用 TWAP 执行的母单。正常情况下几分钟内会做完。",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "tradewatch-pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 19,
+        "w": 13,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "tradewatch-pg"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT p.parent_id AS \"母单\", p.pm_id AS \"PM\", p.symbol AS \"股票\", p.side AS \"方向\",\n       p.qty AS \"数量\", p.filled_qty AS \"已成交\", ROUND(100.0 * p.filled_qty / p.qty) AS \"完成 %\",\n       ROUND(EXTRACT(EPOCH FROM now() - p.created_at) / 60, 1) AS \"已执行(分钟)\",\n       ROUND(EXTRACT(EPOCH FROM now() - (SELECT MAX(c.created_at) FROM child_orders c WHERE c.parent_id = p.parent_id)) / 60, 1)\n         AS \"上个子单(分钟前)\",\n       (SELECT COUNT(*) FROM child_orders c WHERE c.parent_id = p.parent_id) AS \"子单数\"\nFROM parent_orders p WHERE p.status = 'WORKING' ORDER BY p.created_at"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "未完成的子单",
+      "description": "已经发给券商、还没有最终结果的子单。PENDING_NEW = 券商还没确认收到。",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "tradewatch-pg"
+      },
+      "gridPos": {
+        "x": 13,
+        "y": 19,
+        "w": 11,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "tradewatch-pg"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT child_id AS \"子单\", parent_id AS \"母单\", pm_id AS \"PM\", broker AS \"券商\", symbol AS \"股票\", side AS \"方向\",\n       qty AS \"数量\", filled_qty AS \"已成交\", status AS \"状态\",\n       ROUND(EXTRACT(EPOCH FROM now() - created_at)) AS \"发出(秒前)\"\nFROM child_orders WHERE status IN ('PENDING_NEW', 'NEW', 'PARTIALLY_FILLED', 'PENDING_CANCEL')\nORDER BY created_at"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "最近被拒的母单",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "tradewatch-pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 10,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "tradewatch-pg"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT to_char(updated_at, 'HH24:MI:SS') AS \"时间\", parent_id AS \"母单\", pm_id AS \"PM\", symbol AS \"股票\",\n       side AS \"方向\", qty AS \"数量\", reject_reason AS \"原因\"\nFROM parent_orders WHERE status = 'REJECTED' ORDER BY updated_at DESC LIMIT 30"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "logs",
+      "title": "WARN / ERROR 日志",
+      "description": "交易系统打出的警告和错误。想看所有日志，去左边菜单 Explore，选 Loki。",
+      "datasource": {
+        "type": "loki",
+        "uid": "tradewatch-loki"
+      },
+      "gridPos": {
+        "x": 10,
+        "y": 28,
+        "w": 14,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "tradewatch-loki"
+          },
+          "expr": "{container=\"tw-engine\", level=~\"WARN|ERROR\"}",
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "dedupStrategy": "none"
+      }
+    }
+  ]
+}
