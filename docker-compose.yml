@@ -1,9 +1,30 @@
 # TradeWatch：一个缩小版的多 PM 对冲基金交易环境
-# 启动：docker compose up -d      停止：docker compose down
+# 启动：docker compose up -d --build      停止：docker compose down
 # 密码等配置放在 .env（不上传 GitHub），参考 .env.example
+#
+# 交易链路（每一段是一个容器，中间用 Kafka 传消息）：
+#   market-data → oms（策略 + 风控）→ ems（TWAP）→ fix-gateway → broker-sim（券商）
+#   order-store 把所有消息写进 PostgreSQL；monitor 盯着数据库和 Kafka 发告警
 
 x-logging: &logging
   options: { max-size: "20m", max-file: "5" }    # 每个容器的日志最多 100MB，防止写满硬盘
+
+x-app: &app                                       # 我们自己写的服务都用同一个镜像，只是启动命令不同
+  build: .
+  image: tradewatch-app
+  restart: unless-stopped
+  environment:
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    KAFKA_BOOTSTRAP: kafka:9092
+    SPEED: ${SPEED:-1}                            # 1 = 真实速度（1 分钟一根 K 线）
+    TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+  volumes:
+    - ./data:/app/data                            # 行情 CSV、券商对账单、复盘报告都在服务器的 data/ 里
+  depends_on:
+    postgres: { condition: service_started }
+    kafka: { condition: service_healthy }
+  logging: *logging
 
 services:
   # ---------- 公司的基础设施 ----------
@@ -21,6 +42,33 @@ services:
       - ./sql:/docker-entrypoint-initdb.d:ro      # 数据卷是空的时候自动建表
     ports:
       - "127.0.0.1:5432:5432"
+    logging: *logging
+
+  kafka:                                          # 消息总线：服务之间所有的消息都经过它
+    image: apache/kafka:3.8.0
+    container_name: tw-kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller      # KRaft 模式：不需要 ZooKeeper
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_LOG_RETENTION_HOURS: 48               # 消息保留 2 天
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"        # 限制内存
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
     logging: *logging
 
   loki:                                           # 日志平台：集中存放所有容器的日志
@@ -62,23 +110,72 @@ services:
       - "127.0.0.1:3000:3000"
     logging: *logging
 
-  # ---------- 交易系统（开发团队写的，你值班时不改它） ----------
-  engine:
-    build: .
-    container_name: tw-engine
+  backup:                                         # 每天备份一次数据库到 ./backups，保留 7 天
+    image: postgres:16
+    container_name: tw-backup
     restart: unless-stopped
     depends_on: [postgres]
-    command: python engine.py
     environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      SPEED: ${SPEED:-1}                          # 1 = 真实速度（1 分钟一根 K 线）
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      TZ: America/New_York
+    entrypoint: ["sh", "/backup.sh"]
+    volumes:
+      - ./tools/backup.sh:/backup.sh:ro
+      - ./backups:/backups
+    logging: *logging
+
+  # ---------- 交易系统（开发团队写的，你值班时不改它） ----------
+  market-data:
+    <<: *app
+    container_name: tw-market-data
+    command: python -m services.market_data
+
+  oms:
+    <<: *app
+    container_name: tw-oms
+    command: python -m services.oms
+
+  ems:
+    <<: *app
+    container_name: tw-ems
+    command: python -m services.ems
+
+  fix-gateway:
+    <<: *app
+    container_name: tw-fix-gateway
+    command: python -m services.fix_gateway
+
+  order-store:
+    <<: *app
+    container_name: tw-order-store
+    command: python -m services.order_store
+
+  # ---------- 外面的世界（真实工作里不归你管） ----------
+  broker-sim:                                     # 两家券商
+    <<: *app
+    container_name: tw-broker-sim
+    command: python -m services.broker_sim
+
+  chaos:                                          # "现实世界"：随机制造意外（不要看它的代码和 data/chaos/）
+    <<: *app
+    container_name: tw-chaos
+    command: python chaos.py
+    environment:
       FAULT_GAP_MIN: ${FAULT_GAP_MIN:-20}         # 两次意外之间最少隔多少分钟
       FAULT_GAP_MAX: ${FAULT_GAP_MAX:-60}         # 最多隔多少分钟
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}  # 交易系统不用，留给你用同一个镜像跑自己的监控脚本
-      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
-    volumes:
-      - ./data:/app/data                          # 行情 CSV、券商对账单都在服务器的 data/ 里
-    logging: *logging
+    depends_on: []
+
+  # ---------- 值班工具 ----------
+  monitor:                                        # 告警系统
+    <<: *app
+    container_name: tw-monitor
+    command: python -m services.monitor
+
+  tools:                                          # 命令行工具：./tw status（用的时候临时启动，用完就删）
+    <<: *app
+    restart: "no"
+    profiles: ["tools"]
+    command: python -m tools.tw help
 
 volumes:
   pgdata:

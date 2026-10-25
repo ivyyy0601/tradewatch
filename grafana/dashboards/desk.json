@@ -12,7 +12,7 @@
     "to": "now"
   },
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "panels": [
     {
       "id": 1,
@@ -543,7 +543,7 @@
       "id": 10,
       "type": "logs",
       "title": "WARN / ERROR 日志",
-      "description": "交易系统打出的警告和错误。想看所有日志，去左边菜单 Explore，选 Loki。",
+      "description": "所有服务打出的警告和错误。想看所有日志，去左边菜单 Explore，选 Loki。",
       "datasource": {
         "type": "loki",
         "uid": "tradewatch-loki"
@@ -561,7 +561,7 @@
             "type": "loki",
             "uid": "tradewatch-loki"
           },
-          "expr": "{container=\"tw-engine\", level=~\"WARN|ERROR\"}",
+          "expr": "{container=~\"tw-.+\", level=~\"WARN|ERROR\"}",
           "queryType": "range"
         }
       ],
@@ -572,6 +572,220 @@
         "enableLogDetails": true,
         "prettifyLogMessage": false,
         "dedupStrategy": "none"
+      }
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "未解决的告警",
+      "description": "monitor 发现的问题。P1 立刻处理，P2 15 分钟内，P3 复盘时看。处理完用 ./tw resolve <编号> <说明> 关掉。",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "tradewatch-pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 38,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "tradewatch-pg"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT alert_id AS \"编号\", severity AS \"级别\", rule AS \"规则\", to_char(fired_at, 'HH24:MI:SS') AS \"时间\", detail AS \"内容\"\nFROM alerts WHERE resolved_at IS NULL ORDER BY severity, fired_at DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "级别"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "P1": {
+                        "color": "red",
+                        "index": 0
+                      },
+                      "P2": {
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "P3": {
+                        "color": "blue",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "服务心跳",
+      "description": "每个服务最后一次说\"我还活着\"是多少秒前。心跳是经过 Kafka 和 order-store 写进来的：所有服务同时变旧，先怀疑 order-store。",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "tradewatch-pg"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 38,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "tradewatch-pg"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT service AS \"服务\", ROUND(EXTRACT(EPOCH FROM now() - last_seen)) AS \"心跳(秒前)\",\n       CASE WHEN last_seen > now() - interval '90 seconds' THEN 'OK' ELSE 'STALE' END AS \"状态\"\nFROM service_heartbeats ORDER BY service"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "状态"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "OK": {
+                        "color": "green",
+                        "index": 0
+                      },
+                      "STALE": {
+                        "color": "red",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Kafka 消费积压（consumer lag）",
+      "description": "每个服务在 Kafka 上还有多少条消息没读。持续上涨 = 这个服务卡住了或者太慢。",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "tradewatch-pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 47,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "tradewatch-pg"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT ts AS time, group_id AS metric, SUM(lag) AS value\nFROM kafka_lag WHERE $__timeFilter(ts) GROUP BY 1, 2 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       }
     }
   ]

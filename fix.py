@@ -27,5 +27,11 @@ def build(msg_type, sender, target, fields):
     return f"{head}{text}10={checksum:03d}|"
 
 
+def parse(raw):
+    """'8=FIX.4.4|35=8|11=C123|...' → {'8': 'FIX.4.4', '35': '8', '11': 'C123', ...}"""
+    sep = "\x01" if "\x01" in raw else "|"
+    return dict(p.split("=", 1) for p in raw.strip().split(sep) if "=" in p)
+
+
 def side_code(side):
     return "1" if side == "BUY" else "2"

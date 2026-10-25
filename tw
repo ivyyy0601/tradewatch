@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# 值班命令行：./tw status、./tw trace P1234ABCD …（./tw help 看全部）
+cd "$(dirname "$0")" && exec docker compose run --rm -e TW_USER="${TW_USER:-ivy}" tools python -m tools.tw "$@"
