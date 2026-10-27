@@ -1,0 +1,221 @@
+# 命名查询库：copilot（和 AI）只能跑这里面的 SQL，不能自己写 SQL
+# 每条查询都按 as_of（调查的时间点）往前看，这样回放过去的事故也能用
+# 参数类型：pm（PM 名）/ broker / symbol / service / text / int（带上下限）/ order_id
+# 全部是 SELECT；copilot 用只读事务执行，并限制最多返回的行数
+
+pm_state:
+  description: 每个 PM 的状态：是否暂停、原因、执行中母单数、敞口和上限、盈亏（当前值）
+  sql: |
+    SELECT p.pm_id, COALESCE(c.paused, false) AS paused, c.reason, c.changed_by, c.changed_at,
+           (SELECT COUNT(*) FROM parent_orders o WHERE o.pm_id = p.pm_id AND o.status = 'WORKING') AS working_parents,
+           ROUND(e.gross) AS gross, p.max_gross, ROUND(e.net) AS net, p.max_net, ROUND(e.pnl) AS pnl
+    FROM pms p LEFT JOIN control c USING (pm_id) LEFT JOIN pm_exposure e USING (pm_id) ORDER BY 1
+
+recent_alerts:
+  description: as_of 之前 N 分钟内触发的所有告警（看是不是一串告警由同一个原因引起）
+  params: {minutes: {type: int, default: 30, min: 1, max: 1440}}
+  sql: |
+    SELECT alert_id, rule, key, severity, pm_id, fired_at, resolved_at, detail FROM alerts
+    WHERE fired_at BETWEEN %(as_of)s::timestamptz - make_interval(mins => %(minutes)s) AND %(as_of)s::timestamptz + interval '1 minute'
+    ORDER BY fired_at
+
+alert_history:
+  description: 某条规则过去 N 小时的告警历史（看是不是反复出现）
+  params: {rule: {type: text}, hours: {type: int, default: 24, min: 1, max: 168}}
+  sql: |
+    SELECT alert_id, key, severity, pm_id, fired_at, resolved_at, resolved_at - fired_at AS duration, note FROM alerts
+    WHERE rule = %(rule)s AND fired_at BETWEEN %(as_of)s::timestamptz - make_interval(hours => %(hours)s) AND %(as_of)s::timestamptz
+    ORDER BY fired_at DESC
+
+heartbeats:
+  description: 每个服务最后一次心跳距 as_of 多少秒（只有当前值，回放时仅供参考）
+  sql: |
+    SELECT service, last_seen, ROUND(EXTRACT(EPOCH FROM %(as_of)s::timestamptz - last_seen)) AS age_s, detail
+    FROM service_heartbeats ORDER BY service
+
+fix_sessions:
+  description: 和每家券商的 FIX 连接：UP/DOWN、最后心跳、最后一次收到回报（当前值）
+  sql: |
+    SELECT broker, broker_name, status, last_heartbeat, last_msg_in, updated_at FROM fix_sessions ORDER BY broker
+
+kafka_lag_window:
+  description: as_of 前 N 分钟里每个服务在每个 topic 上的最大积压和最新积压
+  params: {minutes: {type: int, default: 30, min: 1, max: 1440}}
+  sql: |
+    SELECT group_id, topic, MAX(lag) AS max_lag,
+           (ARRAY_AGG(lag ORDER BY ts DESC))[1] AS last_lag, MAX(ts) AS last_ts
+    FROM kafka_lag
+    WHERE ts BETWEEN %(as_of)s::timestamptz - make_interval(mins => %(minutes)s) AND %(as_of)s::timestamptz
+    GROUP BY 1, 2 HAVING MAX(lag) > 0 ORDER BY max_lag DESC
+
+market_data_freshness:
+  description: 每只股票在 as_of 之前最后一根行情的时间、距离 as_of 多少秒、最近 N 分钟有几根
+  params: {minutes: {type: int, default: 15, min: 1, max: 1440}}
+  sql: |
+    SELECT symbol, MAX(ts) AS last_bar,
+           ROUND(EXTRACT(EPOCH FROM %(as_of)s::timestamptz - MAX(ts))) AS age_s,
+           COUNT(*) FILTER (WHERE ts > %(as_of)s::timestamptz - make_interval(mins => %(minutes)s)) AS bars_in_window
+    FROM market_data WHERE ts BETWEEN %(as_of)s::timestamptz - interval '1 day' AND %(as_of)s::timestamptz
+    GROUP BY symbol ORDER BY symbol
+
+price_path:
+  description: 某只股票 as_of 前 N 分钟的价格（看价格有没有跳变）
+  params: {symbol: {type: symbol}, minutes: {type: int, default: 60, min: 5, max: 1440}}
+  sql: |
+    SELECT ts, price, volume FROM market_data
+    WHERE symbol = %(symbol)s AND ts BETWEEN %(as_of)s::timestamptz - make_interval(mins => %(minutes)s) AND %(as_of)s::timestamptz
+    ORDER BY ts
+
+pm_order_size_profile:
+  description: 某个 PM 每 15 分钟的母单数、平均 / 最大股数、最大金额、被拒数（看下单大小什么时候变了）
+  params: {pm_id: {type: pm}, hours: {type: int, default: 12, min: 1, max: 72}}
+  sql: |
+    SELECT to_timestamp(floor(EXTRACT(EPOCH FROM created_at) / 900) * 900) AS bucket,
+           COUNT(*) AS parents, ROUND(AVG(qty)) AS avg_qty, MAX(qty) AS max_qty,
+           ROUND(MAX(qty * ref_price)) AS max_notional,
+           COUNT(*) FILTER (WHERE status = 'REJECTED') AS rejected
+    FROM parent_orders
+    WHERE pm_id = %(pm_id)s AND created_at BETWEEN %(as_of)s::timestamptz - make_interval(hours => %(hours)s) AND %(as_of)s::timestamptz
+    GROUP BY 1 ORDER BY 1
+
+pm_large_orders:
+  description: 某个 PM 在 as_of 前 N 小时金额最大的母单，以及它这段时间的母单金额中位数
+  params: {pm_id: {type: pm}, hours: {type: int, default: 12, min: 1, max: 72}}
+  sql: |
+    WITH w AS (SELECT * FROM parent_orders WHERE pm_id = %(pm_id)s
+               AND created_at BETWEEN %(as_of)s::timestamptz - make_interval(hours => %(hours)s) AND %(as_of)s::timestamptz),
+         med AS (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY qty * ref_price) AS median_notional FROM w)
+    SELECT w.parent_id, w.symbol, w.side, w.qty, w.ref_price, ROUND(w.qty * w.ref_price) AS notional,
+           ROUND(med.median_notional) AS median_notional, w.status, w.reject_reason, w.created_at
+    FROM w, med ORDER BY w.qty * w.ref_price DESC LIMIT 15
+
+duplicate_parents:
+  description: 某个 PM 在 as_of 前 N 分钟内，同股票同方向同数量、5 秒内出现两次的母单
+  params: {pm_id: {type: pm}, minutes: {type: int, default: 30, min: 1, max: 1440}}
+  sql: |
+    SELECT a.parent_id AS first_id, b.parent_id AS second_id, a.symbol, a.side, a.qty,
+           a.created_at, a.status AS first_status, b.status AS second_status
+    FROM parent_orders a JOIN parent_orders b
+      ON a.pm_id = b.pm_id AND a.symbol = b.symbol AND a.side = b.side AND a.qty = b.qty
+     AND a.parent_id < b.parent_id AND ABS(EXTRACT(EPOCH FROM a.created_at - b.created_at)) < 5
+    WHERE a.pm_id = %(pm_id)s
+      AND a.created_at BETWEEN %(as_of)s::timestamptz - make_interval(mins => %(minutes)s) AND %(as_of)s::timestamptz
+    ORDER BY a.created_at
+
+risk_rejects:
+  description: as_of 前 N 分钟风控拒绝原因统计（可按 PM 筛，pm_id 填 ALL 表示全部）
+  params: {pm_id: {type: pm_or_all, default: ALL}, minutes: {type: int, default: 30, min: 1, max: 1440}}
+  sql: |
+    SELECT pm_id, split_part(reject_reason, ' ', 1) AS reason, COUNT(*) AS n, MIN(created_at) AS first_at, MAX(created_at) AS last_at,
+           (ARRAY_AGG(reject_reason ORDER BY created_at DESC))[1] AS example
+    FROM parent_orders
+    WHERE status = 'REJECTED' AND (%(pm_id)s = 'ALL' OR pm_id = %(pm_id)s)
+      AND created_at BETWEEN %(as_of)s::timestamptz - make_interval(mins => %(minutes)s) AND %(as_of)s::timestamptz
+    GROUP BY 1, 2 ORDER BY n DESC
+
+locates:
+  description: 每只股票当前还能借多少股来卖空（当前值）
+  sql: |
+    SELECT symbol, available, updated_at FROM locates ORDER BY symbol
+
+children_by_broker:
+  description: 某家券商在 as_of 前 N 分钟发出的子单，按状态统计（看是不是都卡在 PENDING_NEW）
+  params: {broker: {type: broker}, minutes: {type: int, default: 30, min: 1, max: 1440}}
+  sql: |
+    SELECT status, COUNT(*) AS n, MIN(created_at) AS first_sent, MAX(created_at) AS last_sent,
+           SUM(qty) AS qty, SUM(filled_qty) AS filled
+    FROM child_orders
+    WHERE broker = %(broker)s
+      AND created_at BETWEEN %(as_of)s::timestamptz - make_interval(mins => %(minutes)s) AND %(as_of)s::timestamptz
+    GROUP BY status ORDER BY n DESC
+
+pending_children:
+  description: 在 as_of 时刻发出超过 2 分钟、还没收到券商确认的子单（PENDING_NEW）
+  params: {broker: {type: broker}}
+  sql: |
+    SELECT child_id, parent_id, pm_id, symbol, side, qty, created_at,
+           ROUND(EXTRACT(EPOCH FROM %(as_of)s::timestamptz - created_at)) AS age_s
+    FROM child_orders
+    WHERE broker = %(broker)s AND status = 'PENDING_NEW'
+      AND created_at BETWEEN %(as_of)s::timestamptz - interval '1 day' AND %(as_of)s::timestamptz - interval '2 minutes'
+    ORDER BY created_at LIMIT 30
+
+broker_rejects:
+  description: 某家券商在 as_of 前 N 分钟拒绝子单的原因（FIX tag 58）和股票
+  params: {broker: {type: broker}, minutes: {type: int, default: 30, min: 1, max: 1440}}
+  sql: |
+    SELECT symbol, reason, COUNT(*) AS n, MIN(updated_at) AS first_at, MAX(updated_at) AS last_at
+    FROM child_orders
+    WHERE broker = %(broker)s AND status = 'REJECTED'
+      AND updated_at BETWEEN %(as_of)s::timestamptz - make_interval(mins => %(minutes)s) AND %(as_of)s::timestamptz
+    GROUP BY 1, 2 ORDER BY n DESC
+
+fix_traffic:
+  description: 和某家券商每分钟收发的 FIX 消息数（OUT = 我们发出，IN = 券商发来），看从哪一分钟开始没有回应
+  params: {broker: {type: broker}, minutes: {type: int, default: 30, min: 1, max: 720}}
+  sql: |
+    SELECT date_trunc('minute', ts) AS minute,
+           COUNT(*) FILTER (WHERE direction = 'OUT') AS sent,
+           COUNT(*) FILTER (WHERE direction = 'IN') AS received,
+           COUNT(*) FILTER (WHERE direction = 'IN' AND raw LIKE '%%|150=F|%%') AS fills_in,
+           COUNT(*) FILTER (WHERE direction = 'IN' AND raw LIKE '%%|150=8|%%') AS rejects_in
+    FROM fix_messages
+    WHERE broker = %(broker)s
+      AND ts BETWEEN %(as_of)s::timestamptz - make_interval(mins => %(minutes)s) AND %(as_of)s::timestamptz
+    GROUP BY 1 ORDER BY 1
+
+stalled_parents:
+  description: 在 as_of 时刻执行中、但最近 5 分钟没有发出新子单的母单
+  sql: |
+    SELECT p.parent_id, p.pm_id, p.symbol, p.side, p.qty, p.filled_qty, p.created_at,
+           (SELECT MAX(c.created_at) FROM child_orders c WHERE c.parent_id = p.parent_id) AS last_child_at
+    FROM parent_orders p
+    WHERE p.status = 'WORKING' AND p.created_at < %(as_of)s::timestamptz - interval '5 minutes'
+      AND NOT EXISTS (SELECT 1 FROM child_orders c WHERE c.parent_id = p.parent_id
+                      AND c.created_at BETWEEN %(as_of)s::timestamptz - interval '5 minutes' AND %(as_of)s::timestamptz)
+    ORDER BY p.created_at LIMIT 30
+
+slippage:
+  description: 某个 PM 在 as_of 前 N 分钟完成的母单滑点（bps，正数 = 对我们不利）
+  params: {pm_id: {type: pm}, minutes: {type: int, default: 60, min: 5, max: 1440}}
+  sql: |
+    SELECT parent_id, symbol, side, qty, ref_price, avg_price,
+           ROUND(CASE side WHEN 'BUY' THEN 1 ELSE -1 END * (avg_price - ref_price) / ref_price * 10000, 1) AS slippage_bps,
+           created_at, updated_at
+    FROM parent_orders
+    WHERE pm_id = %(pm_id)s AND status = 'DONE'
+      AND updated_at BETWEEN %(as_of)s::timestamptz - make_interval(mins => %(minutes)s) AND %(as_of)s::timestamptz
+    ORDER BY slippage_bps DESC LIMIT 20
+
+recon_breaks:
+  description: 对账差异：某家券商某个对账单（trade_date 例 20261025_1608，填 ALL 表示全部）按类型统计和例子
+  params: {broker: {type: broker}, trade_date: {type: text, default: ALL}}
+  sql: |
+    SELECT trade_date, kind, COUNT(*) AS n, MIN(exec_id) AS example_exec_id,
+           (ARRAY_AGG(detail ORDER BY exec_id))[1] AS example_detail
+    FROM recon_breaks
+    WHERE broker = %(broker)s AND (%(trade_date)s = 'ALL' OR trade_date = %(trade_date)s)
+    GROUP BY 1, 2 ORDER BY 1 DESC, n DESC
+
+executions_by_minute:
+  description: 某家券商在 as_of 前 N 分钟每分钟的成交笔数和股数（看有没有一段时间突然没有成交）
+  params: {broker: {type: broker}, minutes: {type: int, default: 60, min: 5, max: 1440}}
+  sql: |
+    SELECT date_trunc('minute', ts) AS minute, COUNT(*) AS fills, SUM(qty) AS qty
+    FROM executions
+    WHERE broker = %(broker)s
+      AND ts BETWEEN %(as_of)s::timestamptz - make_interval(mins => %(minutes)s) AND %(as_of)s::timestamptz
+    GROUP BY 1 ORDER BY 1
+
+order_activity:
+  description: as_of 前 N 分钟全系统每 5 分钟的母单数、子单数、成交数（看交易有没有整体停下来）
+  params: {minutes: {type: int, default: 60, min: 5, max: 1440}}
+  sql: |
+    SELECT to_timestamp(floor(EXTRACT(EPOCH FROM ts) / 300) * 300) AS bucket,
+           COUNT(*) FILTER (WHERE event_type = 'PARENT_NEW') AS parents,
+           COUNT(*) FILTER (WHERE event_type = 'CHILD_SENT') AS children,
+           COUNT(*) FILTER (WHERE event_type = 'FILL') AS fills,
+           COUNT(*) FILTER (WHERE event_type IN ('RISK_REJECT', 'CHILD_REJECTED')) AS rejects
+    FROM order_events
+    WHERE ts BETWEEN %(as_of)s::timestamptz - make_interval(mins => %(minutes)s) AND %(as_of)s::timestamptz
+    GROUP BY 1 ORDER BY 1

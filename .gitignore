@@ -11,3 +11,6 @@ web/dist/
 web/.angular/
 dotnet/**/bin/
 dotnet/**/obj/
+
+# AI 值班助手起草的事故记录（在服务器上生成，审核后再移到 docs/incidents/）
+docs/incidents/drafts/

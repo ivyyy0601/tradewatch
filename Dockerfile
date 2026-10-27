@@ -10,4 +10,5 @@ RUN pip install --no-cache-dir -r requirements-server.txt
 COPY *.py ./
 COPY services/ services/
 COPY tools/ tools/
+COPY copilot/ copilot/
 COPY sql/ sql/

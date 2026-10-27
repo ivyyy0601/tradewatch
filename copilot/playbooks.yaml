@@ -1,0 +1,81 @@
+# 取证剧本：每种告警一来，先用代码把固定要看的证据收集好（不用 AI、不花钱、每次都不漏）
+# 这就是你手动排查时第一步会看的东西
+#
+# 每一步是下面三种之一：
+#   query: 命名查询（copilot/queries.yaml），params 里可以用 {key} {key0} {key1} {pm_id} {broker} {service} {symbol} {rule}
+#   logs:  在 Loki 里查某个服务在告警前后的日志
+#   note:  只是一句提示，会原样写进证据包
+# 一个事故有多条告警时，每条告警的剧本都会跑，重复的步骤只跑一次
+
+defaults:            # 每个事故都会跑
+  - {query: recent_alerts, params: {minutes: 30}}
+  - {query: heartbeats}
+  - {query: kafka_lag_window, params: {minutes: 30}}
+
+rules:
+  fix_session_down:
+    - {query: fix_sessions}
+    - {query: children_by_broker, params: {broker: "{broker}", minutes: 30}}
+    - {query: fix_traffic, params: {broker: "{broker}", minutes: 30}}
+    - {logs: {service: fix-gateway, contains: "{broker}", level: [WARN, ERROR, INFO], minutes_before: 20, minutes_after: 5, limit: 40}}
+
+  child_no_ack:
+    - {query: fix_sessions}
+    - {query: pending_children, params: {broker: "{broker}"}}
+    - {query: fix_traffic, params: {broker: "{broker}", minutes: 30}}
+    - {logs: {service: fix-gateway, contains: "{broker}", level: [WARN, ERROR], minutes_before: 20, minutes_after: 5, limit: 30}}
+    - {note: "如果连接是 UP、我们有发出（OUT）但券商没有回（IN），问题多半在券商那边"}
+
+  broker_rejects:
+    - {query: broker_rejects, params: {broker: "{broker}", minutes: 30}}
+    - {query: children_by_broker, params: {broker: "{broker}", minutes: 30}}
+    - {logs: {service: ems, contains: "REJECT", level: [WARN, ERROR, INFO], minutes_before: 15, minutes_after: 2, limit: 30}}
+
+  risk_reject_spike:
+    - {query: risk_rejects, params: {pm_id: "{pm_id}", minutes: 30}}
+    - {query: locates}
+    - {query: pm_state}
+    - {query: pm_order_size_profile, params: {pm_id: "{pm_id}", hours: 6}}
+    - {note: "NO_LOCATE 一般是借券额度用完（正常的业务限制）；其他原因要看是不是策略在下不正常的单"}
+
+  order_size_anomaly:
+    - {query: pm_order_size_profile, params: {pm_id: "{pm_id}", hours: 12}}
+    - {query: pm_large_orders, params: {pm_id: "{pm_id}", hours: 12}}
+    - {query: pm_state}
+    - {logs: {service: oms, contains: "strategy", level: [INFO, WARN, ERROR], minutes_before: 120, minutes_after: 5, limit: 30}}
+    - {note: "母单金额 = 数量 × 价格：先分清是数量变大还是价格跳变"}
+
+  duplicate_parent:
+    - {query: duplicate_parents, params: {pm_id: "{pm_id}", minutes: 30}}
+    - {query: pm_state}
+    - {logs: {service: oms, contains: "", level: [WARN, ERROR], minutes_before: 15, minutes_after: 2, limit: 30}}
+
+  parent_stalled:
+    - {query: stalled_parents}
+    - {query: fix_sessions}
+    - {query: order_activity, params: {minutes: 60}}
+    - {logs: {service: ems, contains: "", level: [WARN, ERROR], minutes_before: 20, minutes_after: 2, limit: 30}}
+
+  service_heartbeat_stale:
+    - {query: order_activity, params: {minutes: 30}}
+    - {logs: {service: "{service}", contains: "", level: [WARN, ERROR, INFO], minutes_before: 15, minutes_after: 2, limit: 30}}
+    - {note: "很多服务同时没有心跳时，先看 order-store 的积压：它卡住时数据库不更新，其他服务可能是好的"}
+
+  kafka_consumer_lag:
+    - {query: order_activity, params: {minutes: 30}}
+    - {logs: {service: "{service}", contains: "", level: [WARN, ERROR], minutes_before: 20, minutes_after: 2, limit: 30}}
+
+  market_data_stale:
+    - {query: market_data_freshness, params: {minutes: 15}}
+    - {logs: {service: market-data, contains: "", level: [WARN, ERROR], minutes_before: 20, minutes_after: 2, limit: 30}}
+    - {logs: {service: order-store, contains: "", level: [WARN, ERROR], minutes_before: 20, minutes_after: 2, limit: 20}}
+
+  slippage_high:
+    - {query: slippage, params: {pm_id: "{pm_id}", minutes: 60}}
+    - {query: market_data_freshness, params: {minutes: 30}}
+
+  recon_break:
+    - {query: recon_breaks, params: {broker: "{broker}", trade_date: "{key0}"}}
+    - {query: executions_by_minute, params: {broker: "{broker}", minutes: 720}}
+    - {query: alert_history, params: {rule: fix_session_down, hours: 24}}
+    - {note: "MISSING_IN_OURS = 券商有、我们没有：先看那段时间券商有没有断线、回报有没有丢"}

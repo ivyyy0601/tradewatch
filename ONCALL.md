@@ -29,6 +29,7 @@
 
  tw-monitor：每 30 秒查数据库和 Kafka → 告警（alerts 表 + Telegram）；对账单到了就出复盘报告
  tw-console：值班控制台网页（ASP.NET 后端 + Angular 前端）
+ tw-copilot：AI 值班助手，告警来了自动归并、取证、调查，结论发 Telegram（见下面"AI 值班助手"）
  tw-chaos：现实世界，随机制造意外（不归你管）
 ```
 
@@ -69,6 +70,23 @@ C# 代码在 `dotnet/`，网页前端在 `web/`。
 | `./tw report` | 马上生成复盘报告（平时 monitor 会自动生成） |
 
 真实工作里，暂停 / 恢复 PM、撤单之前要先和 PM / manager 沟通，事后记录谁、什么时候、为什么。
+
+### AI 值班助手（tw-copilot）
+告警来了以后，copilot 会：把相关的告警合成一个**事故** → 等 1 分钟让相关告警归进来 → 按剧本自动收集证据（SQL + 日志）
+→ AI 提出假设、用只读工具查证 → 另一个 AI 角色复核（只能降低可信度）→ 把结论发到 Telegram。
+AI **只能建议**暂停 PM 或撤单，要你点"批准"（或 `./tw approve`）才会执行；永远不会自动恢复 PM。
+没有配置 `ANTHROPIC_API_KEY` 时只用规则判断，其他照常。
+
+| 命令 | 作用 |
+|---|---|
+| `./tw incidents` | 最近的事故和 AI 判断 |
+| `./tw incident 12` | 事故详情：告警、AI 报告、每一步工具调用、建议的操作 |
+| `./tw investigate 12` | 让 copilot 重新调查（`a55` = 从告警 55 开始） |
+| `./tw proposals` / `./tw approve 3 说明` / `./tw reject 3 说明` | 看 / 批准 / 拒绝 AI 建议的操作 |
+| `./tw ai-eval` | 对照真实答案给 AI 打分（**会显示答案**，练习时先自己查完再跑） |
+
+**AI 的结论只是参考。** 先自己看证据，再决定。事故结束后，copilot 会在 `docs/incidents/drafts/` 起草事故记录，你审核修改后再移到 `docs/incidents/`。
+AI 调查时会读 `docs/runbooks/<规则名>.md`：你写的 runbook 越好，它查得越准。详细设计见 `copilot/README.md`。
 
 ### 值班控制台网页（tw-console）
 VS Code → **PORTS** → Forward 端口 `8080` → 浏览器打开 http://localhost:8080
@@ -204,3 +222,4 @@ ls -lt backups/                  # 每天的数据库备份
 - [ ] 记录每次"从告警到找到原因"花了多久，面试时用真实数字
 - [ ] 在 Grafana 里给值班屏幕加你自己的面板
 - [ ] 想一想：monitor 自己挂了怎么办？（提示：谁来监控监控系统）
+- [ ] 每处理完一次事故，用 `./tw ai-eval` 看 AI 判断得对不对；判断错的，补 runbook 或剧本，再 `./tw ai-replay` 验证有没有变好

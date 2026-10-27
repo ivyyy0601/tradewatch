@@ -13,7 +13,7 @@ x-app: &app                                       # 我们自己写的服务都�
   image: tradewatch-app                           # 镜像只由 order-store 打包一次，其他服务直接用
   pull_policy: never                              # 这是我们自己打包的镜像，不要去网上下载
   restart: unless-stopped
-  environment:
+  environment: &app-env
     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     KAFKA_BOOTSTRAP: kafka:9092
     SPEED: ${SPEED:-1}                            # 1 = 真实速度（1 分钟一根 K 线）
@@ -177,6 +177,21 @@ services:
     container_name: tw-monitor
     command: python -m services.monitor
 
+  copilot:                                        # AI 值班助手：告警 → 归并成事故 → 取证 → AI 诊断 → 复核 → 建议（人批准）
+    <<: *app
+    container_name: tw-copilot
+    command: python -m copilot.main
+    environment: &ai-env
+      <<: *app-env
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}     # 不填也能跑：只用规则判断，不调用 AI
+      COPILOT_MODEL: ${COPILOT_MODEL:-claude-sonnet-5-5}
+      COPILOT_DAILY_BUDGET_USD: ${COPILOT_DAILY_BUDGET_USD:-3}
+      COPILOT_AUTONOMY: ${COPILOT_AUTONOMY:-suggest}  # read = 只调查；suggest = 可以建议操作（要人批准才执行）
+      LOKI_URL: http://loki:3100
+    volumes: &ai-volumes
+      - ./data:/app/data
+      - ./docs:/app/docs                          # 读 runbook；事故关闭后把记录草稿写到 docs/incidents/drafts/
+
   console:                                        # 值班控制台网页：ASP.NET（C#）后端 + Angular 前端
     <<: *app
     build: { context: ., dockerfile: Dockerfile.dotnet, target: console }
@@ -206,6 +221,8 @@ services:
     restart: "no"
     profiles: ["tools"]
     command: python -m tools.tw help
+    environment: *ai-env                          # ./tw ai-replay 也要能调用 AI
+    volumes: *ai-volumes
 
 volumes:
   pgdata:

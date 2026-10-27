@@ -2,3 +2,4 @@ pandas
 psycopg2-binary
 confluent-kafka>=2.4,<3
 yfinance
+pyyaml

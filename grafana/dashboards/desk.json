@@ -12,7 +12,7 @@
     "to": "now"
   },
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "panels": [
     {
       "id": 1,
@@ -785,6 +785,178 @@
         "tooltip": {
           "mode": "multi",
           "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 14,
+      "type": "table",
+      "title": "AI 值班助手：最近的事故和判断",
+      "description": "copilot 把相关的告警合成事故，自动取证并调查。详情：./tw incident <事故号>。可信度是复核之后的（复核只能降低可信度）。",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "tradewatch-pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 55,
+        "w": 16,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "tradewatch-pg"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT i.incident_id AS \"事故\", i.severity AS \"级别\", i.status AS \"状态\", i.title AS \"标题\",\n       to_char(i.opened_at, 'MM-DD HH24:MI') AS \"开始\",\n       (SELECT COUNT(*) FROM incident_alerts ia WHERE ia.incident_id = i.incident_id) AS \"告警数\",\n       v.mode AS \"方式\", v.category AS \"判断\", ROUND(v.confidence, 2) AS \"可信度\",\n       v.report->>'summary' AS \"结论\", ROUND(v.cost_usd, 3) AS \"费用$\"\nFROM incidents i LEFT JOIN LATERAL (SELECT * FROM investigations x WHERE x.incident_id = i.incident_id\n                                    ORDER BY x.investigation_id DESC LIMIT 1) v ON true\nWHERE i.source = 'live' ORDER BY i.opened_at DESC LIMIT 30"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "AI 评估（对照真实答案，./tw ai-eval 更新）",
+      "description": "检测率：故障期间有没有出现事故。AI 准确率 / 规则准确率：判断的原因类别对不对（规则 = 只按告警类型猜的对照组）。",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "tradewatch-pg"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 55,
+        "w": 8,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "tradewatch-pg"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT\n  100.0 * COUNT(*) FILTER (WHERE detected) / NULLIF(COUNT(*), 0) AS \"检测率 %\",\n  100.0 * COUNT(*) FILTER (WHERE ai_correct) / NULLIF(COUNT(*) FILTER (WHERE ai_correct IS NOT NULL), 0) AS \"AI 准确率 %\",\n  100.0 * COUNT(*) FILTER (WHERE baseline_correct) / NULLIF(COUNT(*) FILTER (WHERE detected), 0) AS \"规则准确率 %\",\n  COUNT(*) AS \"故障数\"\nFROM copilot_eval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "AI 值班助手：每小时调查次数和费用",
+      "description": "AI 也是系统的一部分，也要被监控：调了几次、花了多少钱、有没有出错。",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "tradewatch-pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 64,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "tradewatch-pg"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT date_trunc('hour', started_at) AS time,\n       COUNT(*) FILTER (WHERE mode = 'ai') AS \"AI 调查\",\n       COUNT(*) FILTER (WHERE mode = 'baseline') AS \"规则判断\",\n       COUNT(*) FILTER (WHERE error IS NOT NULL) AS \"出错\",\n       SUM(cost_usd) AS \"费用 $\"\nFROM investigations WHERE $__timeFilter(started_at) GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "费用 $"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.drawStyle",
+                "value": "line"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     }

@@ -38,6 +38,7 @@ LAG_GROUPS = {
     "oms": ["md.bars", "orders.events", "ops.commands"],
     "ems": ["md.bars", "orders.parent", "exec.reports", "ops.commands"],
     "fix-gateway-out": ["exec.orders"],
+    "copilot": ["ops.alerts"],
     **{f"fix-gateway-{b}": [f"fix.from.{b}"] for b in BROKERS},
     **{f"broker-sim-{b}": [f"fix.to.{b}"] for b in BROKERS},
 }
@@ -155,6 +156,8 @@ def fire(cur, bus, rule, key, severity, pm_id, detail, action=None, hint=""):
     cur.execute("INSERT INTO alerts (rule, key, severity, pm_id, detail, fired_at) VALUES (%s, %s, %s, %s, %s, %s) "
                 "RETURNING alert_id", (rule, key, severity, pm_id, detail, now()))
     alert_id = cur.fetchone()[0]
+    publish(bus, {"event": "fired", "alert_id": alert_id, "rule": rule, "key": key, "severity": severity,
+                  "pm_id": pm_id, "detail": detail, "fired_at": now()})
     taken = "无"
     if action == "pause" and pm_id:
         bus.send("ops.commands", pm_id, {"cmd": "pause", "pm_id": pm_id, "by": "monitor",
@@ -167,13 +170,25 @@ def fire(cur, bus, rule, key, severity, pm_id, detail, action=None, hint=""):
     return True
 
 
-def resolve_missing(cur, active):
+def publish(bus, event):
+    """告警事件发到 Kafka 的 ops.alerts（AI 值班助手 copilot 读）。发不出去不影响告警本身"""
+    try:
+        bus.send("ops.alerts", event.get("rule"), event)
+        bus.flush()
+    except Exception as e:                                       # noqa: BLE001
+        log(SERVICE, "WARN", "alert_event_publish_failed", error=str(e))
+
+
+def resolve_missing(cur, active, bus=None):
     cur.execute("SELECT alert_id, rule, key, severity FROM alerts WHERE resolved_at IS NULL")
     for alert_id, rule, key, severity in cur.fetchall():
         if rule in STICKY or (rule, key) in active:
             continue
-        cur.execute("UPDATE alerts SET resolved_at = %s WHERE alert_id = %s", (now(), alert_id))
+        resolved_at = now()
+        cur.execute("UPDATE alerts SET resolved_at = %s WHERE alert_id = %s", (resolved_at, alert_id))
         log(SERVICE, "INFO", "alert_resolved", alert_id=alert_id, rule=rule, key=key)
+        if bus is not None:
+            publish(bus, {"event": "resolved", "alert_id": alert_id, "rule": rule, "key": key, "resolved_at": resolved_at})
         if severity in ("P1", "P2"):
             telegram(f"[RESOLVED] {rule}  {key}")
 
@@ -190,7 +205,7 @@ def run_rules(cur, bus):
         for key, pm_id, detail in rows:
             active.add((name, str(key)))
             fire(cur, bus, name, str(key), severity, pm_id, detail, action, hint)
-    resolve_missing(cur, active)
+    resolve_missing(cur, active, bus)
 
 
 # ============================================================

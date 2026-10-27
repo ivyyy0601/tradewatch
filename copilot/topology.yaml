@@ -1,0 +1,111 @@
+# 系统拓扑：每个部件是什么、读写哪些 topic / 表、上下游是谁
+# copilot 用它来：① 判断几条告警是不是同一件事（归并）② 告诉 AI "这个部件坏了会影响谁"
+# 改了系统结构就改这里，不用改代码
+
+components:
+  market-data:
+    container: tw-market-data
+    what: 行情服务，每分钟一根 K 线
+    writes_topics: [md.bars, md.exchange]
+    downstream: [oms, ems, order-store, broker-sim]
+
+  oms:
+    container: tw-oms
+    what: 策略 + 交易前风控 + 订单管理（C#）。策略日志的 service 是 strategy-<PM>
+    reads_topics: [md.bars, orders.events, ops.commands]
+    writes_topics: [orders.parent, orders.events, ops.state]
+    upstream: [market-data]
+    downstream: [ems, order-store]
+
+  ems:
+    container: tw-ems
+    what: TWAP 执行算法，把母单拆成 8 个子单（C#）
+    reads_topics: [md.bars, orders.parent, exec.reports, ops.commands]
+    writes_topics: [exec.orders, orders.events, ops.state]
+    upstream: [oms, fix-gateway, market-data]
+    downstream: [fix-gateway, order-store]
+
+  fix-gateway:
+    container: tw-fix-gateway
+    what: 把子单翻译成 FIX 发给券商，并维持和券商的连接
+    reads_topics: [exec.orders, fix.from.NBRG, fix.from.HRBR]
+    writes_topics: [fix.to.NBRG, fix.to.HRBR, exec.reports, fix.log, ops.state]
+    upstream: [ems]
+    downstream: [broker:NBRG, broker:HRBR, ems]
+
+  broker:NBRG:
+    container: tw-broker-sim
+    what: 券商 Northbridge，负责 SNDK、MU
+    symbols: [SNDK, MU]
+    upstream: [fix-gateway]
+
+  broker:HRBR:
+    container: tw-broker-sim
+    what: 券商 Harbor，负责 MSFT、GOOGL
+    symbols: [MSFT, GOOGL]
+    upstream: [fix-gateway]
+
+  order-store:
+    container: tw-order-store
+    what: 把 Kafka 里的所有事件写进数据库。它卡住时数据库会停在旧数据上，很多告警会"看起来"同时出问题
+    reads_topics: [orders.events, fix.log, md.bars, ops.state]
+    upstream: [kafka]
+    downstream: [postgres]
+
+  monitor:
+    container: tw-monitor
+    what: 告警系统，每 30 秒跑一遍规则
+
+  kafka:
+    container: tw-kafka
+    what: 消息总线，所有服务之间的消息都经过它
+    downstream: [market-data, oms, ems, fix-gateway, order-store]
+
+  postgres:
+    container: tw-postgres
+    what: 数据库
+    upstream: [order-store]
+
+  pm:PM_ALPHA:
+    what: PM_ALPHA 动量策略，交易 SNDK、MU、MSFT、GOOGL
+    upstream: [oms]
+  pm:PM_BETA:
+    what: PM_BETA 均值回归，交易 SNDK、MU、MSFT、GOOGL
+    upstream: [oms]
+  pm:PM_GAMMA:
+    what: PM_GAMMA MU / SNDK 配对（市场中性）
+    upstream: [oms]
+
+# Kafka consumer group → 是哪个部件
+consumer_groups:
+  order-store: order-store
+  oms: oms
+  ems: ems
+  fix-gateway-out: fix-gateway
+  fix-gateway-NBRG: fix-gateway
+  fix-gateway-HRBR: fix-gateway
+  broker-sim-NBRG: broker:NBRG
+  broker-sim-HRBR: broker:HRBR
+
+# 股票 → 券商
+routing:
+  SNDK: NBRG
+  MU: NBRG
+  MSFT: HRBR
+  GOOGL: HRBR
+
+# 每条告警规则落在哪些部件上。{key} {key0} {key1} {pm_id} 会被换成告警里的值
+#   key0 / key1 是 key 按 ":" 拆开的两段，比如 broker_rejects 的 key 是 "HRBR:SYMBOL"
+rule_components:
+  market_data_stale:       [market-data]
+  fix_session_down:        [fix-gateway, "broker:{key}"]
+  child_no_ack:            [fix-gateway, "broker:{key}"]
+  broker_rejects:          ["broker:{key0}"]
+  risk_reject_spike:       ["pm:{pm_id}"]
+  order_size_anomaly:      ["pm:{pm_id}"]
+  duplicate_parent:        ["pm:{pm_id}"]
+  parent_stalled:          [ems, "pm:{pm_id}"]
+  service_heartbeat_stale: ["{key}"]
+  kafka_consumer_lag:      ["group:{key0}"]
+  slippage_high:           ["pm:{pm_id}"]
+  recon_break:             ["recon:{key}"]            # 对账差异说的是过去一整个交易时段，单独成一个事故

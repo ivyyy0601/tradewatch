@@ -14,6 +14,13 @@ report with broker statement reconciliation; a `tw` CLI to trace any order acros
 for dashboards and logs; an **ops console web app (ASP.NET Core + Angular)** to watch the desk and pause/resume
 PMs, cancel orders and resolve alerts; daily database backups.
 
+An **AI on-call copilot** (`copilot/`) turns alerts into incidents: it groups related alerts using a topology
+map, collects evidence with per-alert playbooks (named read-only SQL + Loki logs), runs a hypothesis-driven
+Claude investigation with typed read-only tools under a call budget, then a verification pass that can only lower
+confidence. Reports go to Telegram; any action (pause a PM, cancel an order) is only a proposal that a human approves.
+It is scored against the chaos service's ground truth and compared with a rule-based baseline. Without an API key it
+still runs, using the baseline.
+
 A chaos service injects hidden, randomly scheduled real-world incidents (broker disconnects, lost execution
 reports, bad deploys, duplicate submissions, stale market data, locate shortages, stalled consumers, ...)
 so the desk can be practised like a real on-call shift.
@@ -21,9 +28,11 @@ so the desk can be practised like a real on-call shift.
 ```
 market-data → oms (C#: strategies + risk) → ems (C#: TWAP) → fix-gateway ⇄ broker-sim
         all events → Kafka → order-store → PostgreSQL ← monitor / tw / Grafana
+monitor ──ops.alerts──▶ copilot: correlate → playbook evidence → Claude diagnose → verify → propose (human approves)
 ```
 
 - `ONCALL.md` – on-call handbook (中文)
+- `copilot/` – AI on-call copilot (see `copilot/README.md`)
 - `dotnet/` – C# services: `Trading` (OMS, risk, TWAP EMS), `Console` (ASP.NET Core API), `Shared`
 - `web/` – Angular front end of the ops console
 - `services/` – Python services: market_data, fix_gateway, broker_sim, order_store, monitor

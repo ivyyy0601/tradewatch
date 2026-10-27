@@ -27,6 +27,7 @@ TOPICS = [
     "fix.log",            # 收发的每条 FIX 消息（存档用）
     "ops.commands",       # 值班操作：暂停 / 恢复 PM、撤母单（tw 命令行和监控发的）
     "ops.state",          # 状态更新：借券额度、PM 开关、FIX 连接、服务心跳
+    "ops.alerts",         # 告警事件：monitor 每触发 / 解决一条告警就发一条（AI 值班助手 copilot 读）
 ]
 
 
