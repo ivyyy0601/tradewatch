@@ -119,22 +119,24 @@ def diagnose(evidence, ctx, usage):
              + json.dumps(evidence, ensure_ascii=False, default=str) + "\n</evidence>")
     messages = [{"role": "user", "content": intro}]
     transcript = []
-    nudged = False
-    for _ in range(config.MAX_STEPS + 3):
-        force = ctx.steps >= config.MAX_STEPS or nudged
-        resp = llm.call(system, messages, tools=tool_specs, usage=usage,
-                        tool_choice={"type": "tool", "name": "submit_report"} if force else {"type": "auto"})
+    # 注意：有的模型不支持强制指定工具（tool_choice = tool / any），所以这里始终用 auto，
+    # 工具次数用完后：不再执行查询工具，并在消息里明确要求提交结论
+    for _ in range(config.MAX_STEPS + 4):
+        resp = llm.call(system, messages, tools=tool_specs, usage=usage, tool_choice={"type": "auto"})
         messages.append({"role": "assistant", "content": resp["content"]})
         uses = llm.tool_uses(resp)
         if not uses:
-            nudged = True
-            messages.append({"role": "user", "content": "请调用 submit_report 提交你的结论。"})
+            messages.append({"role": "user", "content": "不要只回复文字。现在调用 submit_report 提交你的结论。"})
             continue
         results, report = [], None
         for u in uses:
             if u["name"] == "submit_report":
                 report = u.get("input") or {}
                 results.append({"type": "tool_result", "tool_use_id": u["id"], "content": "已收到"})
+                continue
+            if ctx.steps >= config.MAX_STEPS:
+                results.append({"type": "tool_result", "tool_use_id": u["id"], "is_error": True,
+                                "content": "工具调用次数已用完，这次没有执行。请根据已有信息调用 submit_report。"})
                 continue
             ok, text = tools.execute(ctx, u["name"], u.get("input") or {})
             transcript.append({"tool": u["name"], "args": u.get("input"), "ok": ok, "result": text[:1500]})
@@ -143,6 +145,9 @@ def diagnose(evidence, ctx, usage):
             results.append({"type": "tool_result", "tool_use_id": u["id"], "content": text, "is_error": not ok})
         if report is not None:
             return _validate_report(report), transcript
+        if ctx.steps >= config.MAX_STEPS:
+            results.append({"type": "text", "text": f"工具调用次数（{config.MAX_STEPS} 次）已用完。"
+                            "不要再调用其他工具，现在调用 submit_report 提交结论；不确定的地方写进 ask_humans，并降低 confidence。"})
         messages.append({"role": "user", "content": results})
     raise llm.LLMError("agent did not submit a report")
 
@@ -159,9 +164,11 @@ def verify(evidence, report, transcript, usage):
                + json.dumps(transcript, ensure_ascii=False)[:8000] + "\n</tool_calls>\n\n<report>\n"
                + json.dumps(report, ensure_ascii=False) + "\n</report>")
     resp = llm.call(system, [{"role": "user", "content": content}], tools=[VERDICT_TOOL], usage=usage,
-                    tool_choice={"type": "tool", "name": "submit_verdict"}, max_tokens=1500)
-    uses = llm.tool_uses(resp)
-    v = (uses[0].get("input") if uses else None) or {}
+                    tool_choice={"type": "auto"}, max_tokens=1500)
+    uses = [u for u in llm.tool_uses(resp) if u.get("name") == "submit_verdict"]
+    if not uses:
+        return {"verdict": "skipped", "confidence": report["confidence"], "issues": ["复核员没有提交结论"]}
+    v = uses[0].get("input") or {}
     try:
         v["confidence"] = max(0.0, min(1.0, float(v.get("confidence", report["confidence"]))))
     except (TypeError, ValueError):
